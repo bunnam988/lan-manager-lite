@@ -45,6 +45,7 @@
 #include "stdlib.h"
 #include "ccsp_dm_api.h"
 #include "cap.h"
+#include <pthread.h>
 
 #ifdef INCLUDE_BREAKPAD
 #include "breakpad_wrapper.h"
@@ -227,6 +228,69 @@ void sig_handler(int sig)
 }
 
 
+/**
+ * @brief Log flood thread for telemetry suppression testing.
+ *
+ * Checks for trigger files and floods marker strings that telemetry
+ * greps for in LM.txt.0 (T1 COUNTER markers from the active profile).
+ *
+ * Trigger files and corresponding markers:
+ *   /tmp/log_lmlite_maxhost   -> "MAX Host reach to 200" (SYS_INFO_MAXhost)
+ *   /tmp/log_lmlite_stale     -> "client is in stale state: ..." (TEST_SYS_INFO_Clientinstalestate)
+ *   /tmp/log_lmlite_pattern   -> both above as 2-msg pattern
+ */
+static void* lmlite_flood_thread(void* arg)
+{
+    (void)arg;
+    sleep(60); /* wait for component to stabilize */
+
+    while (1) {
+        int mode = 0;
+        if (access("/tmp/log_lmlite_maxhost", F_OK) == 0) {
+            mode = 1;
+        } else if (access("/tmp/log_lmlite_stale", F_OK) == 0) {
+            mode = 2;
+        } else if (access("/tmp/log_lmlite_pattern", F_OK) == 0) {
+            mode = 3;
+        }
+
+        if (mode != 0) {
+            CcspTraceInfo(("[DEBUG] LMLite flood thread, mode=%d\n", mode));
+        }
+
+        if (mode == 1) {
+            /* Flood "MAX Host reach to 200" - single message, COUNTER marker SYS_INFO_MAXhost */
+            time_t start = time(NULL);
+            while (difftime(time(NULL), start) < 5.0) {
+                CcspTraceInfo(("MAX Host reach to 200\n"));
+                usleep(10000);
+            }
+            CcspTraceInfo(("[LMLITE FLOOD] maxhost done\n"));
+        } else if (mode == 2) {
+            /* Flood "client is in stale state:" - COUNTER marker TEST_SYS_INFO_Clientinstalestate */
+            time_t start = time(NULL);
+            while (difftime(time(NULL), start) < 5.0) {
+                CcspTraceInfo(("client is in stale state: AA:BB:CC:DD:EE:FF\n"));
+                usleep(10000);
+            }
+            CcspTraceInfo(("[LMLITE FLOOD] stale done\n"));
+        } else if (mode == 3) {
+            /* Pattern: both strings as 2-msg cycle */
+            time_t start = time(NULL);
+            while (difftime(time(NULL), start) < 5.0) {
+                CcspTraceInfo(("MAX Host reach to 200\n"));
+                usleep(5000);
+                CcspTraceInfo(("client is in stale state: AA:BB:CC:DD:EE:FF\n"));
+                usleep(5000);
+            }
+            CcspTraceInfo(("[LMLITE FLOOD] pattern done\n"));
+        }
+
+        sleep(30);
+    }
+    return NULL;
+}
+
 int main(int argc, char* argv[])
 {
     BOOL                            bRunAsDaemon       = TRUE;
@@ -360,6 +424,14 @@ int main(int argc, char* argv[])
 
 
     LM_main();
+
+    /* Start flood thread for telemetry suppression testing */
+    {
+        pthread_t flood_tid;
+        pthread_create(&flood_tid, NULL, lmlite_flood_thread, NULL);
+        pthread_detach(flood_tid);
+    }
+
     if ( bRunAsDaemon )
     {
         while(1)
